@@ -1,0 +1,88 @@
+# =============================================================================
+# Render Blueprint — AI Sales Agent
+# Deploys: web API, Celery worker, Celery beat, Postgres, Redis
+# =============================================================================
+
+databases:
+  - name: sales-agent-db
+    databaseName: sales_agent
+    user: postgres
+    plan: standard          # pgvector available on standard+ plans
+    postgresMajorVersion: "16"
+
+services:
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  - type: redis
+    name: sales-agent-redis
+    plan: standard
+    ipAllowList: []          # internal only
+    maxmemoryPolicy: noeviction
+
+  # ── Web API ─────────────────────────────────────────────────────────────────
+  - type: web
+    name: sales-agent-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard
+    healthCheckPath: /health
+    dockerCommand: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 4"
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sales-agent-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: sales-agent-redis
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+
+  # ── Celery worker ───────────────────────────────────────────────────────────
+  - type: worker
+    name: sales-agent-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard
+    dockerCommand: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sales-agent-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: sales-agent-redis
+          property: connectionString
+
+  # ── Celery beat ─────────────────────────────────────────────────────────────
+  - type: worker
+    name: sales-agent-beat
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    dockerCommand: celery -A app.workers.celery_app beat --loglevel=info
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: sales-agent-redis
+          property: connectionString

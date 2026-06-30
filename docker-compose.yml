@@ -1,0 +1,128 @@
+# =============================================================================
+# AI Sales Agent — Local development stack
+# Run: docker compose up --build
+# =============================================================================
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: sales_agent_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: sales_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sales_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: sales_agent_redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sales_agent_api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/sales_agent
+      DATABASE_SYNC_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/sales_agent
+      REDIS_URL: redis://redis:6379/0
+      REDIS_CELERY_BROKER: redis://redis:6379/1
+      REDIS_CELERY_BACKEND: redis://redis:6379/2
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sales_agent_worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/sales_agent
+      DATABASE_SYNC_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/sales_agent
+      REDIS_URL: redis://redis:6379/0
+      REDIS_CELERY_BROKER: redis://redis:6379/1
+      REDIS_CELERY_BACKEND: redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
+
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sales_agent_beat
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/sales_agent
+      DATABASE_SYNC_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/sales_agent
+      REDIS_URL: redis://redis:6379/0
+      REDIS_CELERY_BROKER: redis://redis:6379/1
+      REDIS_CELERY_BACKEND: redis://redis:6379/2
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app beat --loglevel=info
+
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sales_agent_flower
+    env_file: .env
+    environment:
+      REDIS_CELERY_BROKER: redis://redis:6379/1
+      REDIS_CELERY_BACKEND: redis://redis:6379/2
+    ports:
+      - "5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app flower --port=5555
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sales_agent_frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  redis_data:
