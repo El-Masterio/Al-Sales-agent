@@ -7,7 +7,7 @@ import { tokenStore } from "@/lib/api";
 export default function Home() {
   const router = useRouter();
   useEffect(() => {
-    router.replace(tokenStore.getAccess() ? "/dashboard" : "/dashboard");
+    router.replace(tokenStore.getAccess() ? "/dashboard" : "/login");
   }, [router]);
   return null;
 }
